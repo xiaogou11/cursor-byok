@@ -264,6 +264,9 @@ type ActiveStream struct {
 	// 由 handleMaxOutputTokensRecovery 设置（固定有界值，只抬不降、不随恢复次数放大），
 	// driveProvider 读取后即清零（一次性生效）。零值表示未触发恢复，沿用 catalog/配置预算。
 	MaxOutputTokensRecoveryFloor int
+	// MidStreamRecoveryAttempts 记录「已输出后流中断」连续自动续写的次数；
+	// 由 recoverFromMidStreamInterruption 递增，任一 provider pass 成功收口即清零。
+	MidStreamRecoveryAttempts int
 	// ProviderRequestMaxTokens 记录最近一次 provider 请求解析后的 max_tokens，
 	// 供 max_output_tokens 截断恢复计算抬升下限（不低于上次预算）。
 	ProviderRequestMaxTokens int

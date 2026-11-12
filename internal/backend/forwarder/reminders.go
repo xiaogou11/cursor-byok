@@ -24,6 +24,7 @@ const (
 	promptContextSourceSubagentContract          = "subagent_contract"
 	promptContextSourceSubagentEmptyStopRecovery = "subagent_empty_stop_recovery"
 	promptContextSourceMaxOutputTokensRecovery   = "max_output_tokens_recovery"
+	promptContextSourceMidStreamRecovery         = "mid_stream_recovery"
 	promptContextSourceDebugModeReminder         = "debug_mode_reminder"
 )
 

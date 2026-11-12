@@ -1103,6 +1103,17 @@ func (service *Service) handleProviderDoneEvent(stream *ActiveStream, payload *s
 				return nil
 			}
 		}
+		// 已输出部分内容后上游流中断：router 为防重复不重试，这里在回合层自动续写。
+		if recovered, err := service.recoverFromMidStreamInterruption(stream, interruptedProviderPass{
+			Cause:             payload.Err,
+			Usage:             usage,
+			HadToolInvocation: hadToolInvocation,
+			FlushPartial:      flushPartialOutput,
+		}); err != nil {
+			return service.failStreamIfNonTerminal(stream, "unknown", err)
+		} else if recovered {
+			return nil
+		}
 		var providerErr providerTerminalError
 		if errors.As(payload.Err, &providerErr) {
 			service.setTurnPhase(stream, TurnPhaseFailed)
@@ -1114,6 +1125,7 @@ func (service *Service) handleProviderDoneEvent(stream *ActiveStream, payload *s
 		service.setTurnPhase(stream, TurnPhaseFailed)
 		return service.failStream(stream, "unknown", payload.Err)
 	}
+	resetMidStreamRecoveryStreak(stream)
 	if err := service.flushAssistantText(stream, conversationID, turnSeq, requestID, accumulatedText, accumulatedReasoning, accumulatedReasoningSignature, accumulatedReasoningSignatureSource, accumulatedReasoningItemID, accumulatedReasoningStatus, accumulatedReasoningSummary, !hadToolInvocation); err != nil {
 		return service.failStreamIfNonTerminal(stream, "unknown", err)
 	}
