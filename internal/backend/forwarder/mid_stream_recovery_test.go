@@ -11,20 +11,18 @@ import (
 	modeladapter "cursor/internal/backend/agent/model"
 )
 
-// resumeProbeCompiler 记录 driveProvider 是否被续写触发；Compile 返回固定错误，
-// 让被续起的 provider pass 在不依赖真实 provider 的情况下确定性收口。
-type resumeProbeCompiler struct {
-	compileCalls int
-}
+// resumeProbeCompiler 让被续起的 provider pass 在不依赖真实 provider 的情况下确定性收口。
+// 是否续起以 ActiveStream.ProviderPassCount 判定（只在 driveProvider 真正开跑时递增）；
+// 不能数 Compile 调用次数——失败收口的 checkpoint token 估算同样会调用 Compile。
+type resumeProbeCompiler struct{}
 
 var errResumeProbe = errors.New("resume probe: provider pass started")
 
-func (compiler *resumeProbeCompiler) Compile(*ConversationFile, agentv1.AgentMode, string, string, string) (CompiledConversation, error) {
-	compiler.compileCalls++
+func (resumeProbeCompiler) Compile(*ConversationFile, agentv1.AgentMode, string, string, string) (CompiledConversation, error) {
 	return CompiledConversation{}, errResumeProbe
 }
 
-func (compiler *resumeProbeCompiler) DerivePromptContexts(*ConversationFile, agentv1.AgentMode, string) ([]PromptContextMessage, error) {
+func (resumeProbeCompiler) DerivePromptContexts(*ConversationFile, agentv1.AgentMode, string) ([]PromptContextMessage, error) {
 	return nil, nil
 }
 
@@ -54,11 +52,13 @@ func TestInterruptedProviderPassRecoverable(t *testing.T) {
 }
 
 type midStreamFixture struct {
-	store    *ConversationFileStore
-	service  *Service
-	stream   *ActiveStream
-	compiler *resumeProbeCompiler
+	store   *ConversationFileStore
+	service *Service
+	stream  *ActiveStream
 }
+
+// initialProviderPass 是 fixture 中被中断的那一轮；续写成功时 ProviderPassCount 应变为它 +1。
+const initialProviderPass = 1
 
 func newMidStreamFixture(t *testing.T, requestID string) midStreamFixture {
 	t.Helper()
@@ -71,17 +71,16 @@ func newMidStreamFixture(t *testing.T, requestID string) midStreamFixture {
 		t.Fatalf("SaveConversationWithEntries() error = %v", err)
 	}
 	broker := NewStreamBroker()
-	compiler := &resumeProbeCompiler{}
-	service := newServiceWithDependencies(store, NewHistoryProjector(), compiler, nil, broker)
+	service := newServiceWithDependencies(store, NewHistoryProjector(), resumeProbeCompiler{}, nil, broker)
 	stream, err := broker.OpenStream(requestID, persisted.ConversationID, 1, "model-a", "model-a", agentv1.AgentMode_AGENT_MODE_AGENT, "长时间执行的任务")
 	if err != nil {
 		t.Fatalf("OpenStream() error = %v", err)
 	}
 	stream.CheckpointConversation = cloneConversationFile(persisted)
 	stream.CurrentModelCallID = "call-" + requestID
-	stream.ProviderPassCount = 1
+	stream.ProviderPassCount = initialProviderPass
 	stream.Status = StreamStatusStreaming
-	return midStreamFixture{store: store, service: service, stream: stream, compiler: compiler}
+	return midStreamFixture{store: store, service: service, stream: stream}
 }
 
 func (fixture midStreamFixture) interruptAfterText(t *testing.T, text string, cause string) {
@@ -124,8 +123,8 @@ func TestMidStreamInterruptionResumesWithinTurn(t *testing.T) {
 	fixture := newMidStreamFixture(t, "request-mid-stream")
 	fixture.interruptAfterText(t, "正在修改第一个文件，", "read tcp: i/o timeout")
 
-	if fixture.compiler.compileCalls != 1 {
-		t.Fatalf("resumed provider passes = %d, want 1", fixture.compiler.compileCalls)
+	if got := fixture.stream.ProviderPassCount; got != initialProviderPass+1 {
+		t.Fatalf("ProviderPassCount = %d, want %d (one resumed pass)", got, initialProviderPass+1)
 	}
 	if fixture.stream.MidStreamRecoveryAttempts != 1 {
 		t.Fatalf("MidStreamRecoveryAttempts = %d, want 1", fixture.stream.MidStreamRecoveryAttempts)
@@ -146,8 +145,8 @@ func TestMidStreamInterruptionExhaustedFallsBackToFailure(t *testing.T) {
 	fixture.stream.MidStreamRecoveryAttempts = midStreamRecoveryMaxConsecutive
 	fixture.interruptAfterText(t, "部分回复。", "provider stream idle timeout after 90s without effective content")
 
-	if fixture.compiler.compileCalls != 0 {
-		t.Fatalf("resumed provider passes = %d, want 0 after exhaustion", fixture.compiler.compileCalls)
+	if got := fixture.stream.ProviderPassCount; got != initialProviderPass {
+		t.Fatalf("ProviderPassCount = %d, want %d (no resume after exhaustion)", got, initialProviderPass)
 	}
 	if fixture.stream.Status != StreamStatusFailed {
 		t.Fatalf("stream status = %q, want %q", fixture.stream.Status, StreamStatusFailed)
